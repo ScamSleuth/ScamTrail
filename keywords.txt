@@ -7,3 +7,7 @@ urgent
 verify
 suspended
 limited time
+IBAN
+06-Nummer
+E-mail
+KVK-nummer
