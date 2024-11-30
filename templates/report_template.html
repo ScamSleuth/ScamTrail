@@ -2,34 +2,40 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ScamTrail - Trace Report</title>
     <style>
         body {
             font-family: Arial, sans-serif;
-            line-height: normal;
+            line-height: 1.4;
             color: #333;
-            max-width: 1200px;
+            max-width: 800px;
             margin: 0 auto;
-            padding: 20px;
-            font-size: 12px;
+            padding: 10px;
+            font-size: 10px;
+        }
+        h1, h2, h3 {
+            color: #2c3e50;
         }
         h1 {
-            color: #2c3e50;
             border-bottom: 2px solid #2c3e50;
             padding-bottom: 10px;
-            font-size: 20px;
+            font-size: 24px;
         }
         h2 {
-            color: #34495e;
             border-bottom: 1px solid #34495e;
             padding-bottom: 5px;
-            font-size: 16px;
+            font-size: 20px;
+            margin-top: 40px;
+        }
+        h3 {
+            font-size: 18px;
+            margin-top: 30px;
         }
         p {
             font-size: 12px;
         }
-        pre {
+        ul, ol {
+            margin-left: 20px;
             font-size: 12px;
         }
         table {
@@ -41,68 +47,77 @@
         }
         th, td {
             border: 1px solid #ddd;
-            padding: 8px;
+            padding: 2px;
             text-align: left;
             word-wrap: break-word;
             overflow-wrap: break-word;
+            vertical-align: top;
         }
         th {
             background-color: #f2f2f2;
+            font-weight: bold;
         }
         tr:nth-child(even) {
             background-color: #f9f9f9;
-        }
-        .table td, .table th {
-            font-size: 12px;
-        }
-        .url-column {
-            width: 60%;
-        }
-        .number-column {
-            width: 10%;
-        }
-        .ip-column {
-            width: 30%;
         }
         .info-section {
             margin-bottom: 30px;
         }
         .info-item {
-            margin-bottom: 10px;
+            margin-bottom: 20px;
         }
         .info-item strong {
-            font-weight: bold;
-            margin-right: 5px;
+            display: inline-block;
+            width: 200px;
+        }
+        .summary p {
+            margin-bottom: 2px;
+        }
+        .section-content {
+            margin-top: 10px;
+        }
+        .section-content p {
+            margin-bottom: 5px;
+        }
+        .section-content ul {
+            margin-top: 2px;
+        }
+        .table th, .table td {
+            font-size: 12px;
         }
     </style>
 </head>
 <body>
     <h1>ScamTrail - Trace Report</h1>
-    <h3>A ScamTrail Trace Report for URL: {{ redirects[0] }}</h3>
+    <h3>URL Analyzed: {{ redirects[0] }}</h3>
     <p>Report generated on: {{ timestamp }}</p>
 
-    <div class="info-section">
+    <div class="info-section summary">
         <h2>Summary</h2>
-        <p>The destination of the URL you've entered ({{ redirects[0] }}) is <strong>{{ final_url }}</strong>. 
-        It used <strong>{{ redirects|length - 1 }}</strong> redirects to get to its destination. 
-        The domain has been registered for <strong>{{ domain_age }}</strong>. 
-        The geographical location of the site is <strong>{{ ip_geolocations[ip_addresses[-1]] }}</strong>. 
-        The site <strong>{% if uses_cloudflare %}does{% else %}doesn't{% endif %}</strong> use CloudFlare for obfuscation or protection.</p>
+        <p><strong>Final Destination:</strong> {{ final_url }}</p>
+        <p><strong>Number of Redirects:</strong> {{ redirects|length - 1 }}</p>
+        <p><strong>Domain Age:</strong> {{ domain_age }}</p>
+        <p><strong>Geographical Location:</strong> {{ ip_geolocations[ip_addresses[-1]] }}</p>
+        <p><strong>Hosting Provider:</strong> {{ hosting_providers[ip_addresses[-1]] }}</p>
+        <p><strong>Uses CloudFlare:</strong> {% if uses_cloudflare %}Yes{% else %}No{% endif %}</p>
+        <p><strong>DNSSEC Enabled:</strong> {% if dnssec_status %}Yes{% else %}No{% endif %}</p>
+        <p><strong>WHOIS Privacy Detected:</strong> {% if whois_privacy_detected %}Yes{% else %}No{% endif %}</p>
+        <p><strong>Blacklisted by OpenPhish:</strong> {% if blacklist_checks['OpenPhish'] %}Yes{% else %}No{% endif %}</p>
     </div>
 
     <div class="info-section">
         <h2>Redirects</h2>
         <table>
             <tr>
-                <th class="number-column">#</th>
-                <th class="url-column">Redirect URL</th>
-                <th class="ip-column">IP Address</th>
+                <th>#</th>
+                <th>Redirect URL</th>
+                <th>IP Address</th>
             </tr>
             {% for url in redirects %}
             <tr>
                 <td>{{ loop.index }}</td>
                 <td>{{ url }}</td>
-                <td>{{ ip_addresses[loop.index0] }}</td>
+                <td>{{ ip_addresses[loop.index0] if loop.index0 < ip_addresses|length else 'N/A' }}</td>
             </tr>
             {% endfor %}
         </table>
@@ -112,68 +127,185 @@
         <h2>WHOIS Information</h2>
         {% for whois_info in whois_infos %}
         <div class="info-item">
-<!--            <br>
-            <strong>Domain:</strong> {{ redirects[loop.index0]|replace('http://', '')|replace('https://', '')|replace('www.', '') }}
-            <hr> -->
-            {% for key, value in whois_info.items() %}
-                {% if value %}
-                    <p><strong>{{ key|replace('_', ' ')|title }}:</strong> {{ value }}</p>
-                {% endif %}
-            {% endfor %}<br>
+            <h3>{{ whois_info.domain }}</h3>
+            <div class="section-content">
+                <p><strong>Registrar:</strong> {{ whois_info.info.registrar }}</p>
+                <p><strong>Creation Date:</strong> {{ whois_info.info.creation_date }}</p>
+                <p><strong>Expiration Date:</strong> {{ whois_info.info.expiration_date }}</p>
+                <p><strong>Name Servers:</strong> {{ whois_info.info.name_servers|join(', ') }}</p>
+                <p><strong>WHOIS Privacy Protection:</strong> {% if whois_privacy_detected %}Yes{% else %}No{% endif %}</p>
+            </div>
         </div>
         {% endfor %}
     </div>
 
     <div class="info-section">
-        <br>
+        <h2>SSL Certificate Information</h2>
+        {% if ssl_info %}
+        <div class="section-content">
+            <p><strong>Issuer:</strong>
+                {% for key, value in ssl_info.issuer.items() %}
+                    {{ key.decode('utf-8') }}={{ value.decode('utf-8') }}{% if not loop.last %}, {% endif %}
+                {% endfor %}
+            </p>
+            <p><strong>Subject:</strong>
+                {% for key, value in ssl_info.subject.items() %}
+                    {{ key.decode('utf-8') }}={{ value.decode('utf-8') }}{% if not loop.last %}, {% endif %}
+                {% endfor %}
+            </p>
+            <p><strong>Valid From:</strong> {{ ssl_info.notBefore }}</p>
+            <p><strong>Valid Until:</strong> {{ ssl_info.notAfter }}</p>
+            <p><strong>Serial Number:</strong> {{ ssl_info.serialNumber }}</p>
+            <p><strong>Version:</strong> {{ ssl_info.version }}</p>
+        </div>
+        {% else %}
+        <p>No SSL information available.</p>
+        {% endif %}
+    </div>
+
+    <div class="info-section">
         <h2>DNS Information</h2>
         {% for dns_info in dns_infos %}
         <div class="info-item">
-            <strong>Domain:</strong> {{ dns_info.domain }}
-            <p><strong>A Records:</strong> {{ dns_info['A']|join(', ') if dns_info['A'] else 'No A Records' }}</p>
-            <p><strong>CNAME Records:</strong> {{ dns_info['CNAME']|join(', ') if dns_info['CNAME'] else 'No CNAME Records' }}</p>
-            <p><strong>NS Records:</strong> {{ dns_info['NS']|join(', ') if dns_info['NS'] else 'No NS Records' }}</p>
-            <br>
+            <h3>{{ dns_info.domain }}</h3>
+            <div class="section-content">
+                <p><strong>A Records:</strong>
+                    {% if dns_info.info.A %}
+                        {% for record in dns_info.info.A %}
+                            {{ record.ip }}{% if not loop.last %}, {% endif %}
+                        {% endfor %}
+                    {% else %}
+                        No A Records
+                    {% endif %}
+                </p>
+                <p><strong>CNAME Records:</strong>
+                    {% if dns_info.info.CNAME %}
+                        {% for record in dns_info.info.CNAME %}
+                            {{ record.target }}{% if not loop.last %}, {% endif %}
+                        {% endfor %}
+                    {% else %}
+                        No CNAME Records
+                    {% endif %}
+                </p>
+                <p><strong>NS Records:</strong>
+                    {% if dns_info.info.NS %}
+                        {% for record in dns_info.info.NS %}
+                            {{ record.name }}{% if not loop.last %}, {% endif %}
+                        {% endfor %}
+                    {% else %}
+                        No NS Records
+                    {% endif %}
+                </p>
+                <p><strong>DNSSEC Enabled:</strong> {% if dnssec_status %}Yes{% else %}No{% endif %}</p>
+            </div>
         </div>
         {% endfor %}
     </div>
 
     <div class="info-section">
-        <br>
+        <h2>Email Authentication Records</h2>
+        <div class="section-content">
+            <p><strong>SPF Records:</strong>
+                {% if email_auth_records.SPF %}
+                    {% for record in email_auth_records.SPF %}
+                        {{ record }}{% if not loop.last %}, {% endif %}
+                    {% endfor %}
+                {% else %}
+                    No SPF records found.
+                {% endif %}
+            </p>
+            <p><strong>DMARC Records:</strong>
+                {% if email_auth_records.DMARC %}
+                    {% for record in email_auth_records.DMARC %}
+                        {{ record }}{% if not loop.last %}, {% endif %}
+                    {% endfor %}
+                {% else %}
+                    No DMARC records found.
+                {% endif %}
+            </p>
+            <p><strong>DKIM Records:</strong> {{ email_auth_records.DKIM }}</p>
+        </div>
+    </div>
+
+    <div class="info-section">
         <h2>Reverse DNS Information</h2>
         {% for ip, hostnames in reverse_dns_info.items() %}
         <div class="info-item">
-            <strong>IP Address:</strong> {{ ip }}
-            <p><strong>Reverse DNS:</strong> {{ hostnames|join(', ') if hostnames else 'No reverse DNS records found' }}</p>
-            <br>
+            <h3>IP Address: {{ ip }}</h3>
+            <div class="section-content">
+                <p><strong>Reverse DNS:</strong> {{ hostnames|join(', ') if hostnames else 'No reverse DNS records found' }}</p>
+                <p><strong>Hosting Provider:</strong> {{ hosting_providers[ip] }}</p>
+                <p><strong>Geographical Location:</strong> {{ ip_geolocations[ip] }}</p>
+            </div>
         </div>
         {% endfor %}
     </div>
 
     <div class="info-section">
-        <br>
         <h2>Content Analysis</h2>
-        <ul>
-            <li><b>Password Field:</b> {{ content_analysis.password_field }}</li>
-            <li><b>Login Form:</b> {{ content_analysis.login_form }}</li>
-            <li><b>Suspicious Keywords:</b> {{ content_analysis.suspicious_keywords|join(', ') if content_analysis.suspicious_keywords else 'None found' }}</li>
-            <li><b>External Links:</b> {{ content_analysis.external_links }}</li>
-            <li><b>Images:</b> {{ content_analysis.images }}</li>
-            <li><b>Scripts:</b> {{ content_analysis.scripts }}</li>
-        </ul>
+        <div class="section-content">
+            <p><strong>Password Field Present:</strong> {{ content_analysis.password_field }}</p>
+            <p><strong>Login Form Present:</strong> {{ content_analysis.login_form }}</p>
+            <p><strong>Suspicious Keywords:</strong>
+                {% if content_analysis.suspicious_keywords %}
+                    {{ content_analysis.suspicious_keywords|join(', ') }}
+                {% else %}
+                    None found
+                {% endif %}
+            </p>
+            <p><strong>External Links:</strong> {{ content_analysis.external_links }}</p>
+            <p><strong>Images:</strong> {{ content_analysis.images }}</p>
+            <p><strong>Scripts:</strong> {{ content_analysis.scripts }}</p>
+            <p><strong>Sentiment Polarity:</strong> {{ content_analysis.language_analysis.sentiment }}</p>
+            <p><strong>Subjectivity:</strong> {{ content_analysis.language_analysis.subjectivity }}</p>
+            <p><strong>Extracted Keywords:</strong>
+                {% if content_analysis.language_analysis.keywords %}
+                    {{ content_analysis.language_analysis.keywords|join(', ') }}
+                {% else %}
+                    None
+                {% endif %}
+            </p>
+            <p><strong>Server Software:</strong> {{ content_analysis.server_software }}</p>
+        </div>
     </div>
 
     <div class="info-section">
-        <br>
+        <h2>Server Vulnerabilities</h2>
+        {% if server_vulnerabilities %}
+        <div class="section-content">
+            <ul>
+                {% for vulnerability in server_vulnerabilities %}
+                <li>{{ vulnerability }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% else %}
+        <p>No server vulnerabilities detected based on available data.</p>
+        {% endif %}
+    </div>
+
+    <div class="info-section">
+        <h2>Blacklist Checks</h2>
+        <div class="section-content">
+            <p><strong>OpenPhish:</strong> {% if blacklist_checks['OpenPhish'] %}Listed{% else %}Not Listed{% endif %}</p>
+        </div>
+    </div>
+
+    <div class="info-section">
         <h2>Report Usage</h2>
-        <p>The information in this report can be used to take action against potentially fraudulent or malicious websites:</p>
-        <ul>
-            <li><strong>Report to registrars:</strong> You can use the WHOIS data to identify the registrar of the domain. Contact them to report suspicious and/or illegal activities.</li>
-            <li><strong>Report to hosting providers:</strong> Use DNS information to identify the hosting provider. Report the suspicious and/or illegal activities to them, as they can take down malicious content or investigate further.</li>
-            <li><strong>Reverse DNS Lookup Insights:</strong> Reverse DNS lookups can help identify the domains that are associated with an IP address. If multiple domains are associated with the same IP, it could indicate a hosting provider with lax security policies or even a shared infrastructure for malicious activity.</li>
-            <li><strong>Notify security platforms:</strong> Report the site to online security platforms to help protect others from potential threats.</li>
-        </ul>
-        <p>Always exercise caution when dealing with potentially malicious websites and consider consulting with cybersecurity professionals if you're unsure about how to proceed.</p>
+        <div class="section-content">
+            <!-- [Your existing report usage content here] -->
+            <p>The information in this report can be used to take action against potentially fraudulent or malicious websites:</p>
+            <ul>
+                <li><strong>Report to Registrars:</strong> Use the WHOIS data to identify the registrar of the domain. Contact them to report suspicious or illegal activities.</li>
+                <li><strong>Report to Hosting Providers:</strong> Use the hosting provider information to report the site for suspicious or illegal activities.</li>
+                <li><strong>Utilize SSL Information:</strong> Provide SSL certificate details when reporting to authorities to help identify the entity behind the website.</li>
+                <li><strong>Check Email Authentication Records:</strong> Lack of proper email authentication can be a sign of phishing domains, which is useful information for email service providers and security teams.</li>
+                <li><strong>Notify Security Platforms:</strong> Report the site to online security platforms to help protect others from potential threats.</li>
+                <li><strong>Share with Cybersecurity Professionals:</strong> The advanced content analysis and server vulnerabilities can be valuable for security experts investigating the site.</li>
+            </ul>
+            <p>Always exercise caution when dealing with potentially malicious websites and consider consulting with cybersecurity professionals if you're unsure about how to proceed.</p>
+        </div>
     </div>
 </body>
 </html>
