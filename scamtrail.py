@@ -6,6 +6,8 @@ from urllib.parse import urlparse
 from datetime import datetime, timezone
 from weasyprint import HTML
 import socket
+import ssl
+import OpenSSL
 import logging
 from typing import List, Dict, Any, Optional, Union
 import os
@@ -15,6 +17,7 @@ import aiofiles
 from bs4 import BeautifulSoup
 import re
 import tempfile
+from textblob import TextBlob
 
 # Load environment variables
 load_dotenv()
@@ -137,28 +140,14 @@ class URLTracer:
         return f"{years} years, {months} months, {days} days"
 
     async def get_ip_geolocation(self, ip_address: str) -> str:
+        # Since we cannot use APIs that require API keys, we'll perform a basic WHOIS lookup on the IP
         try:
-            headers = {
-                "User-Agent": "ScamTrail/1.0",
-                "Accept": "application/json"
-            }
-            async with self.session.get(f"http://ip-api.com/json/{ip_address}", headers=headers) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    city = data.get('city', 'Unknown')
-                    region = data.get('regionName', 'Unknown')
-                    country = data.get('country', 'Unknown')
-                    return f"{city}, {region}, {country}"
-                elif response.status == 429:
-                    logger.error(f"Rate limit exceeded for IP geolocation API for {ip_address}.")
-                    return "Unknown, Unknown, Unknown"
-                else:
-                    response_text = await response.text()
-                    logger.error(f"Failed to get geolocation for {ip_address}. Status code: {response.status}, Response: {response_text}")
-                    return "Unknown, Unknown, Unknown"
+            result = await asyncio.to_thread(whois.whois, ip_address)
+            country = result.get('country', 'Unknown')
+            return country
         except Exception as e:
             logger.error(f"Geolocation lookup failed for {ip_address}: {e}")
-            return "Unknown, Unknown, Unknown"
+            return "Unknown"
 
     async def is_cloudflare_domain(self, domain: str) -> bool:
         try:
@@ -177,32 +166,47 @@ class URLTracer:
             return False
 
     async def analyze_content(self, url: str) -> Dict[str, Any]:
+        # Initialize indicators with default values
+        indicators = {
+            'password_field': False,
+            'login_form': False,
+            'suspicious_keywords': [],
+            'external_links': 0,
+            'images': 0,
+            'scripts': 0,
+            'language_analysis': {
+                'sentiment': None,
+                'subjectivity': None,
+                'keywords': []
+            },
+            'server_software': 'Unknown',
+        }
         try:
             async with self.session.get(url, allow_redirects=True, timeout=10) as response:
+                headers = response.headers
+                indicators['server_software'] = headers.get('Server', 'Unknown')
                 if response.status == 200:
                     content = await response.text()
                     if len(content) > MAX_CONTENT_SIZE:
                         logger.warning(f"Content size exceeds limit for {url}")
-                        return {}
+                        return indicators
                     soup = BeautifulSoup(content, 'html.parser')
 
-                    # Check for common scam/phishing indicators
-                    indicators = {
-                        'password_field': bool(soup.find('input', {'type': 'password'})),
-                        'login_form': bool(soup.find('form')),
-                        'suspicious_keywords': self.check_suspicious_keywords(content),
-                        'external_links': len(soup.find_all('a', href=re.compile('^https?://'))),
-                        'images': len(soup.find_all('img')),
-                        'scripts': len(soup.find_all('script')),
-                    }
-
-                    return indicators
+                    # Update indicators with actual values
+                    indicators['password_field'] = bool(soup.find('input', {'type': 'password'}))
+                    indicators['login_form'] = bool(soup.find('form'))
+                    indicators['suspicious_keywords'] = self.check_suspicious_keywords(content)
+                    indicators['external_links'] = len(soup.find_all('a', href=re.compile('^https?://')))
+                    indicators['images'] = len(soup.find_all('img'))
+                    indicators['scripts'] = len(soup.find_all('script'))
+                    # Advanced content analysis using TextBlob
+                    indicators['language_analysis'] = self.analyze_language(content)
                 else:
                     logger.warning(f"Failed to fetch content from {url}. Status code: {response.status}")
-                    return {}
+                    return indicators
         except Exception as e:
             logger.exception(f"Error analyzing content for {url}: {e}")
-            return {}
+        return indicators
 
     @staticmethod
     def check_suspicious_keywords(content: str) -> List[str]:
@@ -211,6 +215,136 @@ class URLTracer:
             'bank account', 'urgent', 'verify', 'suspended', 'limited time'
         ]
         return [keyword for keyword in suspicious_keywords if keyword.lower() in content.lower()]
+
+    def analyze_language(self, content: str) -> Dict[str, Any]:
+        analysis = {
+            'sentiment': None,
+            'subjectivity': None,
+            'keywords': []
+        }
+        try:
+            blob = TextBlob(content)
+            analysis['sentiment'] = blob.sentiment.polarity
+            analysis['subjectivity'] = blob.sentiment.subjectivity
+            analysis['keywords'] = list(blob.noun_phrases)
+        except Exception as e:
+            logger.error(f"Language analysis failed: {e}")
+        return analysis
+
+    async def get_ssl_info(self, url: str) -> Dict[str, Any]:
+        ssl_info = {}
+        try:
+            parsed_url = urlparse(url)
+            hostname = parsed_url.hostname
+            context = ssl.create_default_context()
+            # Disable certificate verification
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+            reader, writer = await asyncio.open_connection(hostname, 443, ssl=context)
+            cert_bin = writer.get_extra_info('ssl_object').getpeercert(True)
+            x509 = OpenSSL.crypto.load_certificate(OpenSSL.crypto.FILETYPE_ASN1, cert_bin)
+            ssl_info['issuer'] = dict(x509.get_issuer().get_components())
+            ssl_info['subject'] = dict(x509.get_subject().get_components())
+            ssl_info['notBefore'] = x509.get_notBefore().decode()
+            ssl_info['notAfter'] = x509.get_notAfter().decode()
+            ssl_info['serialNumber'] = x509.get_serial_number()
+            ssl_info['version'] = x509.get_version()
+        except Exception as e:
+            logger.error(f"SSL info retrieval failed for {url}: {e}")
+        return ssl_info
+
+    async def detect_whois_privacy(self, whois_info: Dict[str, Any]) -> bool:
+        privacy_keywords = ['Privacy', 'Protected', 'WhoisGuard', 'Contact Privacy', 'Domains By Proxy']
+        registrant = whois_info.get('registrant_name', '') or ''
+        if not registrant:
+            registrant = whois_info.get('org', '') or ''
+        return any(keyword.lower() in registrant.lower() for keyword in privacy_keywords)
+
+    async def get_email_auth_records(self, domain: str) -> Dict[str, Any]:
+        records = {'SPF': [], 'DMARC': []}
+        try:
+            # SPF Record
+            try:
+                txt_records = await self.dns_resolver.query(domain, 'TXT')
+                spf_records = [r.text for r in txt_records if 'v=spf1' in r.text]
+                records['SPF'] = spf_records
+            except aiodns.error.DNSError as e:
+                logger.warning(f"SPF record lookup failed for {domain}: {e}")
+
+            # DMARC Record
+            try:
+                dmarc_domain = f"_dmarc.{domain}"
+                dmarc_records = await self.dns_resolver.query(dmarc_domain, 'TXT')
+                records['DMARC'] = [r.text for r in dmarc_records]
+            except aiodns.error.DNSError as e:
+                logger.warning(f"DMARC record lookup failed for {domain}: {e}")
+
+            # DKIM is more complex because it requires knowing the selector
+            records['DKIM'] = 'DKIM check not performed (selector unknown)'
+        except Exception as e:
+            logger.error(f"Email auth records lookup failed for {domain}: {e}")
+        return records
+
+    async def check_dnssec(self, domain: str) -> bool:
+        try:
+            result = await self.dns_resolver.query(domain, 'DNSKEY')
+            return bool(result)
+        except aiodns.error.DNSError:
+            return False
+        except Exception as e:
+            logger.error(f"DNSSEC check failed for {domain}: {e}")
+            return False
+
+    async def check_blacklists(self, url: str) -> Dict[str, Any]:
+        results = {}
+        domain = self.extract_domain(url)
+        try:
+            # OpenPhish blacklist
+            async with self.session.get('https://openphish.com/feed.txt') as response:
+                if response.status == 200:
+                    content = await response.text()
+                    blacklist = content.splitlines()
+                    results['OpenPhish'] = url in blacklist or domain in blacklist
+                else:
+                    logger.warning(f"Failed to fetch OpenPhish feed: {response.status}")
+                    results['OpenPhish'] = False
+        except Exception as e:
+            logger.error(f"Blacklist check failed for {url}: {e}")
+            results['OpenPhish'] = False
+        return results
+
+    async def get_hosting_provider(self, ip_address: str) -> str:
+        try:
+            # Perform WHOIS lookup on the IP address
+            whois_info = await asyncio.to_thread(whois.whois, ip_address)
+            org = whois_info.get('org', 'Unknown')
+            return org
+        except Exception as e:
+            logger.error(f"Hosting provider lookup failed for {ip_address}: {e}")
+            return 'Unknown'
+
+    async def check_server_vulnerabilities(self, server_header: str) -> List[str]:
+        vulnerabilities = []
+        try:
+            # For demonstration, we'll check for outdated Apache versions
+            if 'Apache' in server_header:
+                version_match = re.search(r'Apache/([0-9\.]+)', server_header)
+                if version_match:
+                    version = version_match.group(1)
+                    # Assume versions below 2.4.49 are vulnerable (example)
+                    if float(version[:3]) < 2.4:
+                        vulnerabilities.append(f"Apache version {version} is outdated and may have vulnerabilities.")
+        except Exception as e:
+            logger.error(f"Server vulnerability check failed: {e}")
+        return vulnerabilities
+
+    async def get_dns_history(self, domain: str) -> List[Dict[str, Any]]:
+        # Since we cannot use APIs that require API keys, this feature is limited
+        # We can check for historical NS records if possible
+        history = []
+        # Placeholder for actual implementation
+        logger.info(f"DNS history check not implemented for {domain} due to lack of openly available sources.")
+        return history
 
 class ReportGenerator:
     def __init__(self):
@@ -265,23 +399,36 @@ async def analyze_single_url(url: str, tracer: URLTracer) -> Dict[str, Any]:
     cloudflare_info = {}
     reverse_dns_info = {}
     ip_geolocations = {}
+    hosting_providers = {}
+    ssl_info = {}
+    email_auth_records = {}
+    dnssec_status = {}
+    blacklist_checks = {}
+    whois_privacy = {}
+    server_vulnerabilities = []
 
     for ip in unique_ip_addresses:
-        domain = URLTracer.extract_domain(final_url)
-        cloudflare_info[domain] = await tracer.is_cloudflare_domain(domain)
-        reverse_dns = await tracer.reverse_dns_lookup(ip)
-        reverse_dns_info[ip] = reverse_dns if reverse_dns else []
         geolocation = await tracer.get_ip_geolocation(ip)
         ip_geolocations[ip] = geolocation
+        hosting_provider = await tracer.get_hosting_provider(ip)
+        hosting_providers[ip] = hosting_provider
+        reverse_dns = await tracer.reverse_dns_lookup(ip)
+        reverse_dns_info[ip] = reverse_dns if reverse_dns else []
 
-    # Analyze content
+    domain = URLTracer.extract_domain(final_url)
+    uses_cloudflare = await tracer.is_cloudflare_domain(domain)
+    ssl_info = await tracer.get_ssl_info(final_url)
+    email_auth_records = await tracer.get_email_auth_records(domain)
+    dnssec_status = await tracer.check_dnssec(domain)
+    blacklist_checks = await tracer.check_blacklists(final_url)
     content_analysis = await tracer.analyze_content(final_url)
+    whois_info = unique_whois_infos.get(domain, {})
+    whois_privacy_detected = await tracer.detect_whois_privacy(whois_info)
+    server_vulnerabilities = await tracer.check_server_vulnerabilities(content_analysis.get('server_software', ''))
 
     # Prepare data for report
-    creation_date = unique_whois_infos.get(URLTracer.extract_domain(final_url), {}).get('creation_date')
+    creation_date = whois_info.get('creation_date')
     domain_age = URLTracer.calculate_domain_age(creation_date)
-
-    uses_cloudflare = cloudflare_info.get(URLTracer.extract_domain(final_url), False)
 
     report_data = {
         'original_url': url,
@@ -290,13 +437,20 @@ async def analyze_single_url(url: str, tracer: URLTracer) -> Dict[str, Any]:
         'dns_infos': [{'domain': k, 'info': v} for k, v in unique_dns_infos.items()],
         'ip_addresses': list(unique_ip_addresses),
         'final_url': final_url,
-        'cloudflare_info': cloudflare_info,
+        'cloudflare_info': uses_cloudflare,
         'reverse_dns_info': reverse_dns_info,
         'ip_geolocations': ip_geolocations,
+        'hosting_providers': hosting_providers,
+        'ssl_info': ssl_info,
+        'email_auth_records': email_auth_records,
+        'dnssec_status': dnssec_status,
+        'blacklist_checks': blacklist_checks,
+        'whois_privacy_detected': whois_privacy_detected,
         'timestamp': datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC'),
         'domain_age': domain_age,
         'uses_cloudflare': uses_cloudflare,
-        'content_analysis': content_analysis
+        'content_analysis': content_analysis,
+        'server_vulnerabilities': server_vulnerabilities,
     }
 
     return report_data
@@ -330,14 +484,33 @@ async def main():
             else:
                 print("Unable to determine the geographical location.")
 
+            print(f"Hosting Provider: {report_data['hosting_providers'].get(final_ip, 'Unknown')}")
+
             print(f"Uses CloudFlare: {'Yes' if report_data['uses_cloudflare'] else 'No'}")
+            print(f"DNSSEC Enabled: {'Yes' if report_data['dnssec_status'] else 'No'}")
+            print(f"WHOIS Privacy Detected: {'Yes' if report_data['whois_privacy_detected'] else 'No'}")
+            print(f"Blacklisted by OpenPhish: {'Yes' if report_data['blacklist_checks'].get('OpenPhish') else 'No'}")
 
             print("\nContent Analysis:")
             for key, value in report_data['content_analysis'].items():
                 if key == 'suspicious_keywords':
                     print(f"- Suspicious Keywords: {', '.join(value) if value else 'None found'}")
+                elif key == 'language_analysis':
+                    if value['sentiment'] is not None and value['subjectivity'] is not None:
+                        print(f"- Sentiment Polarity: {value.get('sentiment')}")
+                        print(f"- Subjectivity: {value.get('subjectivity')}")
+                        print(f"- Extracted Keywords: {', '.join(value.get('keywords', []))}")
+                    else:
+                        print("- Language Analysis: Not available.")
                 else:
                     print(f"- {key.replace('_', ' ').title()}: {value}")
+
+            if report_data['server_vulnerabilities']:
+                print("\nServer Vulnerabilities Detected:")
+                for vulnerability in report_data['server_vulnerabilities']:
+                    print(f"- {vulnerability}")
+            else:
+                print("\nNo server vulnerabilities detected based on available data.")
 
         elif choice == '2':
             urls = []
