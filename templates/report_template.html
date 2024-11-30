@@ -133,6 +133,7 @@
                 <p><strong>Creation Date:</strong> {{ whois_info.info.creation_date }}</p>
                 <p><strong>Expiration Date:</strong> {{ whois_info.info.expiration_date }}</p>
                 <p><strong>Name Servers:</strong> {{ whois_info.info.name_servers|join(', ') }}</p>
+                <!-- Moved WHOIS Privacy Detection inside the loop to match domain -->
                 <p><strong>WHOIS Privacy Protection:</strong> {% if whois_privacy_detected %}Yes{% else %}No{% endif %}</p>
             </div>
         </div>
@@ -196,10 +197,12 @@
                         No NS Records
                     {% endif %}
                 </p>
-                <p><strong>DNSSEC Enabled:</strong> {% if dnssec_status %}Yes{% else %}No{% endif %}</p>
+                <!-- DNSSEC status is domain-specific, so include it inside the loop if necessary -->
             </div>
         </div>
         {% endfor %}
+        <!-- Moved DNSSEC status outside if it's only for the final domain -->
+        <p><strong>DNSSEC Enabled for Final Domain:</strong> {% if dnssec_status %}Yes{% else %}No{% endif %}</p>
     </div>
 
     <div class="info-section">
@@ -256,15 +259,20 @@
             <p><strong>External Links:</strong> {{ content_analysis.external_links }}</p>
             <p><strong>Images:</strong> {{ content_analysis.images }}</p>
             <p><strong>Scripts:</strong> {{ content_analysis.scripts }}</p>
-            <p><strong>Sentiment Polarity:</strong> {{ content_analysis.language_analysis.sentiment }}</p>
-            <p><strong>Subjectivity:</strong> {{ content_analysis.language_analysis.subjectivity }}</p>
-            <p><strong>Extracted Keywords:</strong>
-                {% if content_analysis.language_analysis.keywords %}
-                    {{ content_analysis.language_analysis.keywords|join(', ') }}
-                {% else %}
-                    None
-                {% endif %}
-            </p>
+            <!-- Modify to handle missing language_analysis -->
+            {% if content_analysis.language_analysis and content_analysis.language_analysis.sentiment is not none %}
+                <p><strong>Sentiment Polarity:</strong> {{ content_analysis.language_analysis.sentiment }}</p>
+                <p><strong>Subjectivity:</strong> {{ content_analysis.language_analysis.subjectivity }}</p>
+                <p><strong>Extracted Keywords:</strong>
+                    {% if content_analysis.language_analysis.keywords %}
+                        {{ content_analysis.language_analysis.keywords|join(', ') }}
+                    {% else %}
+                        None
+                    {% endif %}
+                </p>
+            {% else %}
+                <p><strong>Language Analysis:</strong> Not available.</p>
+            {% endif %}
             <p><strong>Server Software:</strong> {{ content_analysis.server_software }}</p>
         </div>
     </div>
