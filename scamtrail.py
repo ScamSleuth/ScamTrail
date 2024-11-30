@@ -5,18 +5,16 @@ import whois
 from urllib.parse import urlparse
 from datetime import datetime, timezone
 from weasyprint import HTML
-import pycountry
 import socket
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 import os
 from dotenv import load_dotenv
 from jinja2 import Environment, FileSystemLoader
 import aiofiles
-import requests
-from requests.exceptions import RequestException
 from bs4 import BeautifulSoup
 import re
+import tempfile
 
 # Load environment variables
 load_dotenv()
@@ -27,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 # Configuration
 MAX_REDIRECTS = int(os.getenv('MAX_REDIRECTS', 10))
+MAX_CONTENT_SIZE = int(os.getenv('MAX_CONTENT_SIZE', 1_000_000))  # 1 MB
 
 class URLTracer:
     def __init__(self):
@@ -57,14 +56,16 @@ class URLTracer:
     async def follow_redirects(self, url: str) -> List[str]:
         redirects = [url]
         try:
-            response = await asyncio.to_thread(requests.get, url, allow_redirects=True)
-            for resp in response.history:
-                if resp.url != redirects[-1]:
-                    redirects.append(resp.url)
-            if response.url != redirects[-1]:
-                redirects.append(response.url)
-        except RequestException as e:
+            async with self.session.get(url, allow_redirects=True, max_redirects=MAX_REDIRECTS) as response:
+                for history in response.history:
+                    if str(history.url) != redirects[-1]:
+                        redirects.append(str(history.url))
+                if str(response.url) != redirects[-1]:
+                    redirects.append(str(response.url))
+        except aiohttp.ClientError as e:
             logger.error(f"Error following redirects for {url}: {e}")
+        except Exception as e:
+            logger.exception(f"Unexpected error while following redirects for {url}: {e}")
         return redirects
 
     async def get_whois_info(self, url: str) -> Optional[Dict[str, Any]]:
@@ -93,6 +94,8 @@ class URLTracer:
                         dns_info['NS'] = [{'name': r.host} for r in result]
             except aiodns.error.DNSError as e:
                 logger.warning(f"DNS lookup failed for {domain} ({record_type}): {e}")
+            except Exception as e:
+                logger.error(f"Unexpected error during DNS lookup for {domain} ({record_type}): {e}")
 
         return dns_info
 
@@ -114,22 +117,23 @@ class URLTracer:
             return None
 
     @staticmethod
-    def calculate_domain_age(creation_date: Optional[datetime]) -> str:
+    def calculate_domain_age(creation_date: Optional[Union[datetime, List[datetime]]]) -> str:
         if not creation_date:
             return "Unknown"
-        
-        now = datetime.now(timezone.utc)
+
         if isinstance(creation_date, list):
-            creation_date = creation_date[0]
-        
+            creation_date = min(creation_date)
+
+        now = datetime.now(timezone.utc)
+
         # Ensure creation_date is timezone-aware
         if creation_date.tzinfo is None:
             creation_date = creation_date.replace(tzinfo=timezone.utc)
-        
+
         delta = now - creation_date
         years, remaining_days = divmod(delta.days, 365)
         months, days = divmod(remaining_days, 30)
-        
+
         return f"{years} years, {months} months, {days} days"
 
     async def get_ip_geolocation(self, ip_address: str) -> str:
@@ -145,6 +149,9 @@ class URLTracer:
                     region = data.get('regionName', 'Unknown')
                     country = data.get('country', 'Unknown')
                     return f"{city}, {region}, {country}"
+                elif response.status == 429:
+                    logger.error(f"Rate limit exceeded for IP geolocation API for {ip_address}.")
+                    return "Unknown, Unknown, Unknown"
                 else:
                     response_text = await response.text()
                     logger.error(f"Failed to get geolocation for {ip_address}. Status code: {response.status}, Response: {response_text}")
@@ -171,11 +178,14 @@ class URLTracer:
 
     async def analyze_content(self, url: str) -> Dict[str, Any]:
         try:
-            async with self.session.get(url, allow_redirects=True) as response:
+            async with self.session.get(url, allow_redirects=True, timeout=10) as response:
                 if response.status == 200:
                     content = await response.text()
+                    if len(content) > MAX_CONTENT_SIZE:
+                        logger.warning(f"Content size exceeds limit for {url}")
+                        return {}
                     soup = BeautifulSoup(content, 'html.parser')
-                    
+
                     # Check for common scam/phishing indicators
                     indicators = {
                         'password_field': bool(soup.find('input', {'type': 'password'})),
@@ -185,13 +195,13 @@ class URLTracer:
                         'images': len(soup.find_all('img')),
                         'scripts': len(soup.find_all('script')),
                     }
-                    
+
                     return indicators
                 else:
                     logger.warning(f"Failed to fetch content from {url}. Status code: {response.status}")
                     return {}
         except Exception as e:
-            logger.error(f"Error analyzing content for {url}: {e}")
+            logger.exception(f"Error analyzing content for {url}: {e}")
             return {}
 
     @staticmethod
@@ -209,16 +219,19 @@ class ReportGenerator:
 
     async def generate_report(self, data: Dict[str, Any], output_file: str) -> None:
         html_content = self.template.render(data)
-        
-        async with aiofiles.open('temp_report.html', 'w') as f:
-            await f.write(html_content)
+
+        # Use a temporary file
+        with tempfile.NamedTemporaryFile('w', delete=False, suffix='.html') as tmp_file:
+            temp_html_file = tmp_file.name
+            async with aiofiles.open(temp_html_file, 'w') as f:
+                await f.write(html_content)
 
         # Convert HTML to PDF using WeasyPrint
-        HTML('temp_report.html').write_pdf(output_file)
+        HTML(temp_html_file).write_pdf(output_file)
         logger.info(f"Report saved to {output_file}")
 
         # Clean up temporary HTML file
-        os.remove('temp_report.html')
+        os.remove(temp_html_file)
 
 async def analyze_single_url(url: str, tracer: URLTracer) -> Dict[str, Any]:
     url = URLTracer.ensure_scheme(url)
@@ -226,48 +239,63 @@ async def analyze_single_url(url: str, tracer: URLTracer) -> Dict[str, Any]:
     final_url = redirects[-1]
 
     tasks = []
-    for redirect in redirects:
+    for redirect in set(redirects):  # Use `set` to remove duplicates
         tasks.append(tracer.get_whois_info(redirect))
         tasks.append(tracer.get_dns_info(redirect))
         tasks.append(tracer.get_ip_address(redirect))
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
-    whois_infos = [r if not isinstance(r, Exception) else None for r in results[0::3]]
-    dns_infos = [r if not isinstance(r, Exception) else None for r in results[1::3]]
-    ip_addresses = [r if not isinstance(r, Exception) else None for r in results[2::3]]
+    # Deduplicate and prepare results
+    unique_whois_infos = {}
+    unique_dns_infos = {}
+    unique_ip_addresses = set()
+
+    for idx, redirect in enumerate(set(redirects)):
+        if not isinstance(results[idx * 3], Exception):
+            domain = URLTracer.extract_domain(redirect)
+            unique_whois_infos[domain] = results[idx * 3]
+        if not isinstance(results[idx * 3 + 1], Exception):
+            domain = URLTracer.extract_domain(redirect)
+            unique_dns_infos[domain] = results[idx * 3 + 1]
+        if not isinstance(results[idx * 3 + 2], Exception):
+            unique_ip_addresses.add(results[idx * 3 + 2])
 
     # Process results
     cloudflare_info = {}
     reverse_dns_info = {}
     ip_geolocations = {}
 
-    for url, ip in zip(redirects, ip_addresses):
-        if ip:
-            domain = URLTracer.extract_domain(url)
-            cloudflare_info[domain] = await tracer.is_cloudflare_domain(domain)
-            reverse_dns = await tracer.reverse_dns_lookup(ip)
-            reverse_dns_info[ip] = reverse_dns if reverse_dns else []
-            geolocation = await tracer.get_ip_geolocation(ip)
-            ip_geolocations[ip] = geolocation
+    for ip in unique_ip_addresses:
+        domain = URLTracer.extract_domain(final_url)
+        cloudflare_info[domain] = await tracer.is_cloudflare_domain(domain)
+        reverse_dns = await tracer.reverse_dns_lookup(ip)
+        reverse_dns_info[ip] = reverse_dns if reverse_dns else []
+        geolocation = await tracer.get_ip_geolocation(ip)
+        ip_geolocations[ip] = geolocation
 
     # Analyze content
     content_analysis = await tracer.analyze_content(final_url)
 
     # Prepare data for report
+    creation_date = unique_whois_infos.get(URLTracer.extract_domain(final_url), {}).get('creation_date')
+    domain_age = URLTracer.calculate_domain_age(creation_date)
+
+    uses_cloudflare = cloudflare_info.get(URLTracer.extract_domain(final_url), False)
+
     report_data = {
         'original_url': url,
         'redirects': redirects,
-        'whois_infos': [{'domain': URLTracer.extract_domain(url), 'info': info} for url, info in zip(redirects, whois_infos)],
-        'dns_infos': [info for info in dns_infos if info is not None],
-        'ip_addresses': ip_addresses,
+        'whois_infos': [{'domain': k, 'info': v} for k, v in unique_whois_infos.items()],
+        'dns_infos': [{'domain': k, 'info': v} for k, v in unique_dns_infos.items()],
+        'ip_addresses': list(unique_ip_addresses),
         'final_url': final_url,
         'cloudflare_info': cloudflare_info,
         'reverse_dns_info': reverse_dns_info,
         'ip_geolocations': ip_geolocations,
         'timestamp': datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC'),
-        'domain_age': URLTracer.calculate_domain_age(whois_infos[0].get('creation_date') if whois_infos[0] else None),
-        'uses_cloudflare': cloudflare_info.get(URLTracer.extract_domain(final_url), False),
+        'domain_age': domain_age,
+        'uses_cloudflare': uses_cloudflare,
         'content_analysis': content_analysis
     }
 
@@ -283,7 +311,7 @@ async def main():
         if choice == '1':
             url = input("Enter the URL to trace: ").strip()
             report_data = await analyze_single_url(url, tracer)
-            
+
             # Generate report
             report_generator = ReportGenerator()
             output_file = f"scamtrail_report_{URLTracer.extract_domain(url)}.pdf"
@@ -292,18 +320,18 @@ async def main():
             # Print out the key information
             print(f"\nAnalysis Results for {url}:")
             print(f"Report saved to: {output_file}")
-            print(f"Final destination: {report_data['final_url']}")
-            print(f"Number of redirects: {len(report_data['redirects']) - 1}")
+            print(f"Final Destination: {report_data['final_url']}")
+            print(f"Number of Redirects: {len(report_data['redirects']) - 1}")
             print(f"Domain age: {report_data['domain_age']}")
-            
+
             final_ip = report_data['ip_addresses'][-1] if report_data['ip_addresses'] else None
             if final_ip and final_ip in report_data['ip_geolocations']:
                 print(f"Geographical location: {report_data['ip_geolocations'][final_ip]}")
             else:
                 print("Unable to determine the geographical location.")
-            
+
             print(f"Uses CloudFlare: {'Yes' if report_data['uses_cloudflare'] else 'No'}")
-            
+
             print("\nContent Analysis:")
             for key, value in report_data['content_analysis'].items():
                 if key == 'suspicious_keywords':
