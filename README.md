@@ -21,7 +21,7 @@ Prerequisites
 Run the following command to install all required Python packages:
 
 ```
-pip install asyncio aiohttp aiodns python-whois weasyprint pycountry python-dotenv Jinja2 aiofiles requests beautifulsoup4
+pip install aiohttp aiodns whois weasyprint jinja2 beautifulsoup4 aiofiles python-dotenv
 ```
 
 ## Usage
