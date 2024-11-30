@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ScamTrail - Trace Report</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: normal;
+            color: #333;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            font-size: 12px;
+        }
+        h1 {
+            color: #2c3e50;
+            border-bottom: 2px solid #2c3e50;
+            padding-bottom: 10px;
+            font-size: 20px;
+        }
+        h2 {
+            color: #34495e;
+            border-bottom: 1px solid #34495e;
+            padding-bottom: 5px;
+            font-size: 16px;
+        }
+        p {
+            font-size: 12px;
+        }
+        pre {
+            font-size: 12px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 20px;
+            font-size: 12px;
+            table-layout: fixed;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+            word-wrap: break-word;
+            overflow-wrap: break-word;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+        tr:nth-child(even) {
+            background-color: #f9f9f9;
+        }
+        .table td, .table th {
+            font-size: 12px;
+        }
+        .url-column {
+            width: 60%;
+        }
+        .number-column {
+            width: 10%;
+        }
+        .ip-column {
+            width: 30%;
+        }
+        .info-section {
+            margin-bottom: 30px;
+        }
+        .info-item {
+            margin-bottom: 10px;
+        }
+        .info-item strong {
+            font-weight: bold;
+            margin-right: 5px;
+        }
+    </style>
+</head>
+<body>
+    <h1>ScamTrail - Trace Report</h1>
+    <h3>A ScamTrail Trace Report for URL: {{ redirects[0] }}</h3>
+    <p>Report generated on: {{ timestamp }}</p>
+
+    <div class="info-section">
+        <h2>Summary</h2>
+        <p>The destination of the URL you've entered ({{ redirects[0] }}) is <strong>{{ final_url }}</strong>. 
+        It used <strong>{{ redirects|length - 1 }}</strong> redirects to get to its destination. 
+        The domain has been registered for <strong>{{ domain_age }}</strong>. 
+        The geographical location of the site is <strong>{{ ip_geolocations[ip_addresses[-1]] }}</strong>. 
+        The site <strong>{% if uses_cloudflare %}does{% else %}doesn't{% endif %}</strong> use CloudFlare for obfuscation or protection.</p>
+    </div>
+
+    <div class="info-section">
+        <h2>Redirects</h2>
+        <table>
+            <tr>
+                <th class="number-column">#</th>
+                <th class="url-column">Redirect URL</th>
+                <th class="ip-column">IP Address</th>
+            </tr>
+            {% for url in redirects %}
+            <tr>
+                <td>{{ loop.index }}</td>
+                <td>{{ url }}</td>
+                <td>{{ ip_addresses[loop.index0] }}</td>
+            </tr>
+            {% endfor %}
+        </table>
+    </div>
+
+    <div class="info-section">
+        <h2>WHOIS Information</h2>
+        {% for whois_info in whois_infos %}
+        <div class="info-item">
+<!--            <br>
+            <strong>Domain:</strong> {{ redirects[loop.index0]|replace('http://', '')|replace('https://', '')|replace('www.', '') }}
+            <hr> -->
+            {% for key, value in whois_info.items() %}
+                {% if value %}
+                    <p><strong>{{ key|replace('_', ' ')|title }}:</strong> {{ value }}</p>
+                {% endif %}
+            {% endfor %}<br>
+        </div>
+        {% endfor %}
+    </div>
+
+    <div class="info-section">
+        <br>
+        <h2>DNS Information</h2>
+        {% for dns_info in dns_infos %}
+        <div class="info-item">
+            <strong>Domain:</strong> {{ dns_info.domain }}
+            <p><strong>A Records:</strong> {{ dns_info['A']|join(', ') if dns_info['A'] else 'No A Records' }}</p>
+            <p><strong>CNAME Records:</strong> {{ dns_info['CNAME']|join(', ') if dns_info['CNAME'] else 'No CNAME Records' }}</p>
+            <p><strong>NS Records:</strong> {{ dns_info['NS']|join(', ') if dns_info['NS'] else 'No NS Records' }}</p>
+            <br>
+        </div>
+        {% endfor %}
+    </div>
+
+    <div class="info-section">
+        <br>
+        <h2>Reverse DNS Information</h2>
+        {% for ip, hostnames in reverse_dns_info.items() %}
+        <div class="info-item">
+            <strong>IP Address:</strong> {{ ip }}
+            <p><strong>Reverse DNS:</strong> {{ hostnames|join(', ') if hostnames else 'No reverse DNS records found' }}</p>
+            <br>
+        </div>
+        {% endfor %}
+    </div>
+
+    <div class="info-section">
+        <br>
+        <h2>Content Analysis</h2>
+        <ul>
+            <li><b>Password Field:</b> {{ content_analysis.password_field }}</li>
+            <li><b>Login Form:</b> {{ content_analysis.login_form }}</li>
+            <li><b>Suspicious Keywords:</b> {{ content_analysis.suspicious_keywords|join(', ') if content_analysis.suspicious_keywords else 'None found' }}</li>
+            <li><b>External Links:</b> {{ content_analysis.external_links }}</li>
+            <li><b>Images:</b> {{ content_analysis.images }}</li>
+            <li><b>Scripts:</b> {{ content_analysis.scripts }}</li>
+        </ul>
+    </div>
+
+    <div class="info-section">
+        <br>
+        <h2>Report Usage</h2>
+        <p>The information in this report can be used to take action against potentially fraudulent or malicious websites:</p>
+        <ul>
+            <li><strong>Report to registrars:</strong> You can use the WHOIS data to identify the registrar of the domain. Contact them to report suspicious and/or illegal activities.</li>
+            <li><strong>Report to hosting providers:</strong> Use DNS information to identify the hosting provider. Report the suspicious and/or illegal activities to them, as they can take down malicious content or investigate further.</li>
+            <li><strong>Reverse DNS Lookup Insights:</strong> Reverse DNS lookups can help identify the domains that are associated with an IP address. If multiple domains are associated with the same IP, it could indicate a hosting provider with lax security policies or even a shared infrastructure for malicious activity.</li>
+            <li><strong>Notify security platforms:</strong> Report the site to online security platforms to help protect others from potential threats.</li>
+        </ul>
+        <p>Always exercise caution when dealing with potentially malicious websites and consider consulting with cybersecurity professionals if you're unsure about how to proceed.</p>
+    </div>
+</body>
+</html>
