@@ -31,7 +31,15 @@ Prerequisites
 Run the following command to install all required Python packages:
 
 ```
-pip install aiohttp aiodns whois weasyprint pyOpenSSL jinja2 beautifulsoup4 aiofiles python-dotenv textblob
+pip install aiohttp aiodns python-whois weasyprint pyOpenSSL jinja2 beautifulsoup4 aiofiles python-dotenv textblob ipwhois
+```
+
+### Download TextBlob Corpora
+
+TextBlob requires certain corpora for language analysis. Run the following command to download them:
+
+```
+python -m textblob.download_corpora
 ```
 
 ### Additional System Dependencies for WeasyPrint
