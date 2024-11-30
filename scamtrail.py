@@ -1,7 +1,7 @@
 import asyncio
 import aiohttp
 import aiodns
-import whois
+from whois import whois  # Updated import statement
 from urllib.parse import urlparse
 from datetime import datetime, timezone
 from weasyprint import HTML
@@ -18,6 +18,7 @@ from bs4 import BeautifulSoup
 import re
 import tempfile
 from textblob import TextBlob
+from ipwhois import IPWhois
 
 # Load environment variables
 load_dotenv()
@@ -53,7 +54,10 @@ class URLTracer:
     @staticmethod
     def extract_domain(url: str) -> str:
         parsed_url = urlparse(url)
-        domain = parsed_url.netloc.split(':')[0].replace('www.', '')
+        if parsed_url.netloc:
+            domain = parsed_url.netloc.split(':')[0].replace('www.', '')
+        else:
+            domain = parsed_url.path.split('/')[0].replace('www.', '')
         return domain
 
     async def follow_redirects(self, url: str) -> List[str]:
@@ -74,7 +78,7 @@ class URLTracer:
     async def get_whois_info(self, url: str) -> Optional[Dict[str, Any]]:
         domain = self.extract_domain(url)
         try:
-            whois_info = await asyncio.to_thread(whois.whois, domain)
+            whois_info = await asyncio.to_thread(whois, domain)
             return whois_info
         except Exception as e:
             logger.error(f"WHOIS lookup failed for {domain}: {e}")
@@ -140,10 +144,10 @@ class URLTracer:
         return f"{years} years, {months} months, {days} days"
 
     async def get_ip_geolocation(self, ip_address: str) -> str:
-        # Since we cannot use APIs that require API keys, we'll perform a basic WHOIS lookup on the IP
         try:
-            result = await asyncio.to_thread(whois.whois, ip_address)
-            country = result.get('country', 'Unknown')
+            obj = IPWhois(ip_address)
+            result = await asyncio.to_thread(obj.lookup_rdap)
+            country = result.get('asn_country_code', 'Unknown')
             return country
         except Exception as e:
             logger.error(f"Geolocation lookup failed for {ip_address}: {e}")
@@ -313,16 +317,6 @@ class URLTracer:
             results['OpenPhish'] = False
         return results
 
-    async def get_hosting_provider(self, ip_address: str) -> str:
-        try:
-            # Perform WHOIS lookup on the IP address
-            whois_info = await asyncio.to_thread(whois.whois, ip_address)
-            org = whois_info.get('org', 'Unknown')
-            return org
-        except Exception as e:
-            logger.error(f"Hosting provider lookup failed for {ip_address}: {e}")
-            return 'Unknown'
-
     async def check_server_vulnerabilities(self, server_header: str) -> List[str]:
         vulnerabilities = []
         try:
@@ -338,6 +332,16 @@ class URLTracer:
             logger.error(f"Server vulnerability check failed: {e}")
         return vulnerabilities
 
+    async def get_hosting_provider(self, ip_address: str) -> str:
+        try:
+            obj = IPWhois(ip_address)
+            result = await asyncio.to_thread(obj.lookup_rdap)
+            org = result.get('network', {}).get('name', 'Unknown')
+            return org
+        except Exception as e:
+            logger.error(f"Hosting provider lookup failed for {ip_address}: {e}")
+            return 'Unknown'
+
     async def get_dns_history(self, domain: str) -> List[Dict[str, Any]]:
         # Since we cannot use APIs that require API keys, this feature is limited
         # We can check for historical NS records if possible
@@ -352,23 +356,27 @@ class ReportGenerator:
         self.template = self.env.get_template('report_template.html')
 
     async def generate_report(self, data: Dict[str, Any], output_file: str) -> None:
-        html_content = self.template.render(data)
+        try:
+            html_content = self.template.render(data)
 
-        # Use a temporary file
-        with tempfile.NamedTemporaryFile('w', delete=False, suffix='.html') as tmp_file:
-            temp_html_file = tmp_file.name
-            async with aiofiles.open(temp_html_file, 'w') as f:
-                await f.write(html_content)
+            # Use a temporary file
+            with tempfile.NamedTemporaryFile('w', delete=False, suffix='.html') as tmp_file:
+                temp_html_file = tmp_file.name
+                async with aiofiles.open(temp_html_file, 'w') as f:
+                    await f.write(html_content)
 
-        # Convert HTML to PDF using WeasyPrint
-        HTML(temp_html_file).write_pdf(output_file)
-        logger.info(f"Report saved to {output_file}")
+            # Convert HTML to PDF using WeasyPrint
+            HTML(temp_html_file).write_pdf(output_file)
+            logger.info(f"Report saved to {output_file}")
 
-        # Clean up temporary HTML file
-        os.remove(temp_html_file)
+            # Clean up temporary HTML file
+            os.remove(temp_html_file)
+        except Exception as e:
+            logger.error(f"Report generation failed: {e}")
 
 async def analyze_single_url(url: str, tracer: URLTracer) -> Dict[str, Any]:
     url = URLTracer.ensure_scheme(url)
+    original_url = url  # Keep the URL after ensuring the scheme
     redirects = await tracer.follow_redirects(url)
     final_url = redirects[-1]
 
@@ -385,34 +393,41 @@ async def analyze_single_url(url: str, tracer: URLTracer) -> Dict[str, Any]:
     unique_dns_infos = {}
     unique_ip_addresses = set()
 
-    for idx, redirect in enumerate(set(redirects)):
-        if not isinstance(results[idx * 3], Exception):
+    redirects_set = list(set(redirects))
+    for idx, redirect in enumerate(redirects_set):
+        if not isinstance(results[idx * 3], Exception) and results[idx * 3] is not None:
             domain = URLTracer.extract_domain(redirect)
             unique_whois_infos[domain] = results[idx * 3]
-        if not isinstance(results[idx * 3 + 1], Exception):
+        if not isinstance(results[idx * 3 + 1], Exception) and results[idx * 3 + 1] is not None:
             domain = URLTracer.extract_domain(redirect)
             unique_dns_infos[domain] = results[idx * 3 + 1]
-        if not isinstance(results[idx * 3 + 2], Exception):
+        if not isinstance(results[idx * 3 + 2], Exception) and results[idx * 3 + 2] is not None:
             unique_ip_addresses.add(results[idx * 3 + 2])
 
     # Process results
-    cloudflare_info = {}
     reverse_dns_info = {}
     ip_geolocations = {}
     hosting_providers = {}
     ssl_info = {}
     email_auth_records = {}
-    dnssec_status = {}
     blacklist_checks = {}
-    whois_privacy = {}
     server_vulnerabilities = []
 
-    for ip in unique_ip_addresses:
-        geolocation = await tracer.get_ip_geolocation(ip)
-        ip_geolocations[ip] = geolocation
-        hosting_provider = await tracer.get_hosting_provider(ip)
-        hosting_providers[ip] = hosting_provider
-        reverse_dns = await tracer.reverse_dns_lookup(ip)
+    tasks = []
+    ip_list = list(unique_ip_addresses)
+    for ip in ip_list:
+        tasks.append(tracer.get_ip_geolocation(ip))
+        tasks.append(tracer.get_hosting_provider(ip))
+        tasks.append(tracer.reverse_dns_lookup(ip))
+
+    ip_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    for idx, ip in enumerate(ip_list):
+        geolocation = ip_results[idx * 3]
+        hosting_provider = ip_results[idx * 3 + 1]
+        reverse_dns = ip_results[idx * 3 + 2]
+        ip_geolocations[ip] = geolocation if not isinstance(geolocation, Exception) else "Unknown"
+        hosting_providers[ip] = hosting_provider if not isinstance(hosting_provider, Exception) else "Unknown"
         reverse_dns_info[ip] = reverse_dns if reverse_dns else []
 
     domain = URLTracer.extract_domain(final_url)
@@ -423,11 +438,11 @@ async def analyze_single_url(url: str, tracer: URLTracer) -> Dict[str, Any]:
     blacklist_checks = await tracer.check_blacklists(final_url)
     content_analysis = await tracer.analyze_content(final_url)
     whois_info = unique_whois_infos.get(domain, {})
-    whois_privacy_detected = await tracer.detect_whois_privacy(whois_info)
+    whois_privacy_detected = await tracer.detect_whois_privacy(whois_info) if whois_info else False
     server_vulnerabilities = await tracer.check_server_vulnerabilities(content_analysis.get('server_software', ''))
 
     # Prepare data for report
-    creation_date = whois_info.get('creation_date')
+    creation_date = whois_info.get('creation_date') if whois_info else None
     domain_age = URLTracer.calculate_domain_age(creation_date)
 
     report_data = {
@@ -435,7 +450,7 @@ async def analyze_single_url(url: str, tracer: URLTracer) -> Dict[str, Any]:
         'redirects': redirects,
         'whois_infos': [{'domain': k, 'info': v} for k, v in unique_whois_infos.items()],
         'dns_infos': [{'domain': k, 'info': v} for k, v in unique_dns_infos.items()],
-        'ip_addresses': list(unique_ip_addresses),
+        'ip_addresses': ip_list,
         'final_url': final_url,
         'cloudflare_info': uses_cloudflare,
         'reverse_dns_info': reverse_dns_info,
