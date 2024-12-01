@@ -1,7 +1,7 @@
 import asyncio
 import aiohttp
 import aiodns
-from whois import whois  # Updated import statement
+import whois  # Correct import statement
 from urllib.parse import urlparse
 from datetime import datetime, timezone
 from weasyprint import HTML
@@ -13,10 +13,8 @@ from typing import List, Dict, Any, Optional, Union
 import os
 from dotenv import load_dotenv
 from jinja2 import Environment, FileSystemLoader
-import aiofiles
 from bs4 import BeautifulSoup
 import re
-import tempfile
 from textblob import TextBlob
 from ipwhois import IPWhois
 
@@ -24,7 +22,7 @@ from ipwhois import IPWhois
 load_dotenv()
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(levelname)s:%(name)s:%(message)s')
 logger = logging.getLogger(__name__)
 
 # Configuration
@@ -78,7 +76,7 @@ class URLTracer:
     async def get_whois_info(self, url: str) -> Optional[Dict[str, Any]]:
         domain = self.extract_domain(url)
         try:
-            whois_info = await asyncio.to_thread(whois, domain)
+            whois_info = await asyncio.to_thread(whois.whois, domain)
             return whois_info
         except Exception as e:
             logger.error(f"WHOIS lookup failed for {domain}: {e}")
@@ -129,7 +127,14 @@ class URLTracer:
             return "Unknown"
 
         if isinstance(creation_date, list):
+            # Filter out None values
+            creation_date = [date for date in creation_date if date is not None]
+            if not creation_date:
+                return "Unknown"
             creation_date = min(creation_date)
+
+        if not isinstance(creation_date, datetime):
+            return "Unknown"
 
         now = datetime.now(timezone.utc)
 
@@ -358,19 +363,9 @@ class ReportGenerator:
     async def generate_report(self, data: Dict[str, Any], output_file: str) -> None:
         try:
             html_content = self.template.render(data)
-
-            # Use a temporary file
-            with tempfile.NamedTemporaryFile('w', delete=False, suffix='.html') as tmp_file:
-                temp_html_file = tmp_file.name
-                async with aiofiles.open(temp_html_file, 'w') as f:
-                    await f.write(html_content)
-
-            # Convert HTML to PDF using WeasyPrint
-            HTML(temp_html_file).write_pdf(output_file)
+            # Generate PDF directly from the HTML content string
+            HTML(string=html_content).write_pdf(output_file)
             logger.info(f"Report saved to {output_file}")
-
-            # Clean up temporary HTML file
-            os.remove(temp_html_file)
         except Exception as e:
             logger.error(f"Report generation failed: {e}")
 
@@ -381,7 +376,8 @@ async def analyze_single_url(url: str, tracer: URLTracer) -> Dict[str, Any]:
     final_url = redirects[-1]
 
     tasks = []
-    for redirect in set(redirects):  # Use `set` to remove duplicates
+    redirects_set = list(set(redirects))
+    for redirect in redirects_set:
         tasks.append(tracer.get_whois_info(redirect))
         tasks.append(tracer.get_dns_info(redirect))
         tasks.append(tracer.get_ip_address(redirect))
@@ -391,9 +387,8 @@ async def analyze_single_url(url: str, tracer: URLTracer) -> Dict[str, Any]:
     # Deduplicate and prepare results
     unique_whois_infos = {}
     unique_dns_infos = {}
-    unique_ip_addresses = set()
+    unique_ip_addresses = []
 
-    redirects_set = list(set(redirects))
     for idx, redirect in enumerate(redirects_set):
         if not isinstance(results[idx * 3], Exception) and results[idx * 3] is not None:
             domain = URLTracer.extract_domain(redirect)
@@ -402,7 +397,9 @@ async def analyze_single_url(url: str, tracer: URLTracer) -> Dict[str, Any]:
             domain = URLTracer.extract_domain(redirect)
             unique_dns_infos[domain] = results[idx * 3 + 1]
         if not isinstance(results[idx * 3 + 2], Exception) and results[idx * 3 + 2] is not None:
-            unique_ip_addresses.add(results[idx * 3 + 2])
+            ip_address = results[idx * 3 + 2]
+            if ip_address not in unique_ip_addresses:
+                unique_ip_addresses.append(ip_address)
 
     # Process results
     reverse_dns_info = {}
@@ -414,7 +411,7 @@ async def analyze_single_url(url: str, tracer: URLTracer) -> Dict[str, Any]:
     server_vulnerabilities = []
 
     tasks = []
-    ip_list = list(unique_ip_addresses)
+    ip_list = unique_ip_addresses
     for ip in ip_list:
         tasks.append(tracer.get_ip_geolocation(ip))
         tasks.append(tracer.get_hosting_provider(ip))
@@ -450,7 +447,7 @@ async def analyze_single_url(url: str, tracer: URLTracer) -> Dict[str, Any]:
         'redirects': redirects,
         'whois_infos': [{'domain': k, 'info': v} for k, v in unique_whois_infos.items()],
         'dns_infos': [{'domain': k, 'info': v} for k, v in unique_dns_infos.items()],
-        'ip_addresses': ip_list,
+        'ip_addresses': unique_ip_addresses,
         'final_url': final_url,
         'cloudflare_info': uses_cloudflare,
         'reverse_dns_info': reverse_dns_info,
