@@ -97,12 +97,24 @@
         <p><strong>Final Destination:</strong> {{ final_url }}</p>
         <p><strong>Number of Redirects:</strong> {{ redirects|length - 1 }}</p>
         <p><strong>Domain Age:</strong> {{ domain_age }}</p>
-        <p><strong>Geographical Location:</strong> {{ ip_geolocations[ip_addresses[-1]] }}</p>
-        <p><strong>Hosting Provider:</strong> {{ hosting_providers[ip_addresses[-1]] }}</p>
+        <p><strong>Geographical Location:</strong> 
+            {% if ip_addresses and ip_addresses[-1] in ip_geolocations %}
+                {{ ip_geolocations[ip_addresses[-1]] }}
+            {% else %}
+                Unknown
+            {% endif %}
+        </p>
+        <p><strong>Hosting Provider:</strong> 
+            {% if ip_addresses and ip_addresses[-1] in hosting_providers %}
+                {{ hosting_providers[ip_addresses[-1]] }}
+            {% else %}
+                Unknown
+            {% endif %}
+        </p>
         <p><strong>Uses CloudFlare:</strong> {% if uses_cloudflare %}Yes{% else %}No{% endif %}</p>
         <p><strong>DNSSEC Enabled:</strong> {% if dnssec_status %}Yes{% else %}No{% endif %}</p>
         <p><strong>WHOIS Privacy Detected:</strong> {% if whois_privacy_detected %}Yes{% else %}No{% endif %}</p>
-        <p><strong>Blacklisted by OpenPhish:</strong> {% if blacklist_checks['OpenPhish'] %}Yes{% else %}No{% endif %}</p>
+        <p><strong>Blacklisted by OpenPhish:</strong> {% if blacklist_checks and blacklist_checks['OpenPhish'] %}Yes{% else %}No{% endif %}</p>
     </div>
 
     <div class="info-section">
